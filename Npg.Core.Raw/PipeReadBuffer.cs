@@ -7,6 +7,8 @@ namespace Npg.Core.Raw
 {
     public sealed class PipeReadBuffer
     {
+        private int _readPosition;
+        private ReadOnlySequence<byte> _buffer = ReadOnlySequence<byte>.Empty;
         private readonly PipeReader _input;
 
         public PipeReadBuffer(PipeReader input)
@@ -14,39 +16,57 @@ namespace Npg.Core.Raw
             this._input = input;
         }
 
-        public ReadOnlySequence<byte> TryEnsureFast(int bytes)
+        public bool TryEnsure(int bytes, out ReadOnlySequence<byte> buffer)
         {
+            if (_readPosition + bytes <= _buffer.Length)
+            {
+                buffer = _buffer.Slice(_readPosition);
+                return true;
+            }
+            
+            Reset();
+            
             if (_input.TryRead(out var result))
             {
-                var buffer = result.Buffer;
-                if (buffer.Length >= bytes)
+                var buf = result.Buffer;
+                if (buf.Length >= bytes)
                 {
-                    return buffer;
+                    _buffer = buffer = buf;
+                    return true;
                 }
 
-                this.Advance(buffer);
+                _input.AdvanceTo(buf.Start, buf.End);
             }
-
-            return ReadOnlySequence<byte>.Empty;
+            
+            buffer = ReadOnlySequence<byte>.Empty;
+            return false;
         }
 
-        public async ValueTask<ReadOnlySequence<byte>> EnsureAsync(int bytes)
+        public ValueTask<ReadOnlySequence<byte>> EnsureAsync(int bytes)
         {
-            while (true)
-            {
-                var result = await _input.ReadAsync().ConfigureAwait(false);
-                var buffer = result.Buffer;
-                if (buffer.Length >= bytes)
-                {
-                    return buffer.Slice(0, bytes);
-                }
+            if (TryEnsure(bytes, out var buffer))
+                return new ValueTask<ReadOnlySequence<byte>>(buffer);
 
-                this.Advance(buffer);
+            return EnsureAsyncCore(this, bytes);
+            
+            static async ValueTask<ReadOnlySequence<byte>> EnsureAsyncCore(PipeReadBuffer instance, int bytes)
+            {
+                var r = await instance._input.ReadAtLeastAsync(bytes);
+                return instance._buffer = r.Buffer;
             }
         }
 
-        public void Advance(ReadOnlySequence<byte> sequence) => this._input.AdvanceTo(sequence.Start, sequence.End);
 
-        public void Consume(SequencePosition position) => this._input.AdvanceTo(position);
+        private void Reset()
+        {
+            if (!_buffer.IsEmpty)
+            {
+                _input.AdvanceTo(_buffer.GetPosition(_readPosition), _buffer.End);
+                _readPosition = 0;
+                _buffer = ReadOnlySequence<byte>.Empty;
+            }
+        }
+
+        public void Consume(int bytes) => _readPosition += bytes;
     }
 }

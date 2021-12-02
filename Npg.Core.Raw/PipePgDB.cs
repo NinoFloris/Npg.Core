@@ -17,9 +17,7 @@ namespace Npg.Core.Raw
         private readonly SocketConnection _connection;
         private readonly PipeWriteBuffer _writeBuffer;
         private readonly PipeReadBuffer _readBuffer;
-
-        private SequencePosition? _packetEnd;
-
+        
         public PipePgDB(SocketConnection connection)
         {
             this._connection = connection;
@@ -36,12 +34,14 @@ namespace Npg.Core.Raw
 
         private static readonly UTF8Encoding RelaxedUTF8Encoding = new(false, false);
 
+        private static readonly IOQueue IOQueue = new();
+        
         public static async ValueTask<PipePgDB> OpenAsync(EndPoint endPoint, string username, string? password, string? database)
         {
-            var connection = await SocketConnection.ConnectAsync(endPoint, new PipeOptions(
-                readerScheduler: PipeScheduler.Inline,
-                writerScheduler: PipeScheduler.Inline,
-                useSynchronizationContext: false)).ConfigureAwait(false);
+            var ioscheduler = PipeScheduler.Inline;
+            var sendPipeOptions = new PipeOptions(null, ioscheduler, PipeScheduler.Inline, useSynchronizationContext: false);
+            var receivePipeOptions = new PipeOptions(null, PipeScheduler.Inline, ioscheduler, minimumSegmentSize: 8096, useSynchronizationContext: false);
+            var connection = await SocketConnection.ConnectAsync(endPoint, sendPipeOptions, receivePipeOptions).ConfigureAwait(false);
             var db = new PipePgDB(connection);
 
             try
@@ -388,50 +388,45 @@ namespace Npg.Core.Raw
 
         public ValueTask<ReadOnlySequence<byte>> ReadSinglePacketAsync(CancellationToken cancellationToken = default)
         {
-            if (_packetEnd.HasValue)
-            {
-                this._readBuffer.Consume(this._packetEnd.Value);
-            }
-
-            var packet = this._readBuffer.TryEnsureFast(5);
-            if (packet.Length < 5)
-            {
-                return this.ReadSinglePacketAsyncSlow(cancellationToken);
-            }
-
-            var length = ReadInt32BigEndian(packet.Slice(1)) + 1;
-            Debug.Assert(length < 8192);
+            if (!this._readBuffer.TryEnsure(5, out var packet))
+                return this.ReadAtLeastAsync(5, cancellationToken);
+                
+            var length = PeekHeader(packet);
             if (packet.Length >= length)
             {
                 return new ValueTask<ReadOnlySequence<byte>>(ReadPacket(packet, length));
             }
-
-            this._readBuffer.Advance(packet);
-            return this.ReadSinglePacketAsyncSlow(length, cancellationToken);
+            
+            return this.ReadAtLeastAsync(length, cancellationToken);
         }
 
-        private async ValueTask<ReadOnlySequence<byte>> ReadSinglePacketAsyncSlow(CancellationToken cancellationToken = default)
+        private async ValueTask<ReadOnlySequence<byte>> ReadAtLeastAsync(int minimumSize = 5, CancellationToken cancellationToken = default)
         {
-            var packet = await this._readBuffer.EnsureAsync(5).ConfigureAwait(false);
-            var length = ReadInt32BigEndian(packet.Slice(1)) + 1;
-            Debug.Assert(length < 8192);
+            var packet = await this._readBuffer.EnsureAsync(minimumSize).ConfigureAwait(false);
+
+            var length = PeekHeader(packet);
             if (packet.Length >= length)
             {
                 return ReadPacket(packet, length);
             }
 
-            this._readBuffer.Advance(packet);
-            return await this.ReadSinglePacketAsyncSlow(length, cancellationToken).ConfigureAwait(false);
+            return await ReadSinglePacketAsync(cancellationToken);
         }
 
-        private async ValueTask<ReadOnlySequence<byte>> ReadSinglePacketAsyncSlow(int length, CancellationToken cancellationToken = default)
-            => ReadPacket(await this._readBuffer.EnsureAsync(length).ConfigureAwait(false), length);
+        int PeekHeader(ReadOnlySequence<byte> packet)
+        {
+            var length = ReadInt32BigEndian(packet.Slice(1)) + 1;
+            Debug.Assert(length < 8192);
+            return length;
 
+        }
+        
         private ReadOnlySequence<byte> ReadPacket(ReadOnlySequence<byte> packet, int length)
         {
             Debug.Assert(packet.Length >= length);
-            this._packetEnd = packet.GetPosition(length);
-            return packet.Slice(0, length);
+            var p = packet;
+            _readBuffer.Consume(length);
+            return p.Slice(0, length);
         }
 
         public static void ValidateResponseMessage(ReadOnlySequence<byte> response)

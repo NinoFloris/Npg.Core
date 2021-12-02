@@ -9,9 +9,10 @@ namespace Benchmark
 {
     public class ReadRows
     {
-        const string DefaultConnectionString = "Server=127.0.0.1;User ID=postgres;Password=Master1234;Database=postgres;SSL Mode=Disable;Pooling=false";
+        const string PostgresUserPassword = "postgres123";
+        const string DefaultConnectionString = $"Server=127.0.0.1;User ID=postgres;Password={PostgresUserPassword};Database=postgres;SSL Mode=Disable;Pooling=false;Max Auto Prepare=0;";
 
-        [Params(1, 10, 100, 1000)]
+        [Params(1000)]
         public int NumRows { get; set; }
 
         NpgsqlCommand Command { get; set; } = default!;
@@ -33,7 +34,7 @@ namespace Benchmark
         public async Task SetupRaw()
         {
             var endpoint = IPEndPoint.Parse("127.0.0.1:5432");
-            this.RawDB = await PgDB.OpenAsync(endpoint, "postgres", "Master1234", "postgres");
+            this.RawDB = await PgDB.OpenAsync(endpoint, "postgres", PostgresUserPassword, "postgres");
             this.RawQuery = $"SELECT generate_series(1, {this.NumRows})";
         }
 
@@ -41,7 +42,7 @@ namespace Benchmark
         public async Task SetupPipeRaw()
         {
             var endpoint = IPEndPoint.Parse("127.0.0.1:5432");
-            this.PipeRawDB = await PipePgDB.OpenAsync(endpoint, "postgres", "Master1234", "postgres");
+            this.PipeRawDB = await PipePgDB.OpenAsync(endpoint, "postgres", PostgresUserPassword, "postgres");
             this.RawQuery = $"SELECT generate_series(1, {this.NumRows})";
         }
 
@@ -55,7 +56,7 @@ namespace Benchmark
             }
         }
 
-        [Benchmark]
+        // [Benchmark]
         public async ValueTask ReadRawSimple()
         {
             await this.RawDB.ExecuteSimpleAsync(this.RawQuery);
@@ -72,7 +73,7 @@ namespace Benchmark
             }
         }
 
-        [Benchmark]
+        // [Benchmark]
         public async ValueTask ReadRawExtended()
         {
             await this.RawDB.ExecuteExtendedAsync(this.RawQuery);
@@ -93,7 +94,7 @@ namespace Benchmark
             return (BackendMessageCode)response[0];
         }
 
-        [Benchmark]
+        // [Benchmark]
         public async ValueTask ReadPipeRawSimple()
         {
             await this.PipeRawDB.ExecuteSimpleAsync(this.RawQuery);

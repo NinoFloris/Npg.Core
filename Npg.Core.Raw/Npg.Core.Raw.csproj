@@ -11,6 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="System.IO.Pipelines" Version="6.0.0" />
     <PackageReference Include="Pipelines.Sockets.Unofficial" Version="2.2.0" />
   </ItemGroup>
 
