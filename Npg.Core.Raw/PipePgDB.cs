@@ -3,6 +3,7 @@ using System;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.IO;
 using System.IO.Pipelines;
 using System.Net;
 using System.Security.Cryptography;
@@ -14,6 +15,7 @@ namespace Npg.Core.Raw
 {
     public sealed class PipePgDB : IDisposable
     {
+        private readonly Pipe _readPipe;
         private readonly SocketConnection _connection;
         private readonly PipeWriteBuffer _writeBuffer;
         private readonly PipeReadBuffer _readBuffer;
@@ -24,7 +26,13 @@ namespace Npg.Core.Raw
             this._writeBuffer = new PipeWriteBuffer(this._connection.Output);
             this._readBuffer = new PipeReadBuffer(this._connection.Input);
         }
-
+        
+        public PipePgDB(Pipe readPipe)
+        {
+            _readPipe = readPipe;
+            this._readBuffer = new PipeReadBuffer(readPipe.Reader);
+        }
+        
         public void Dispose()
         {
             this._connection.Dispose();
@@ -40,27 +48,29 @@ namespace Npg.Core.Raw
         {
             var ioscheduler = PipeScheduler.Inline;
             var sendPipeOptions = new PipeOptions(null, ioscheduler, PipeScheduler.Inline, useSynchronizationContext: false);
-            var receivePipeOptions = new PipeOptions(null, PipeScheduler.Inline, ioscheduler, minimumSegmentSize: 8096, useSynchronizationContext: false);
+            var receivePipeOptions = new PipeOptions(null, PipeScheduler.Inline, ioscheduler, 1024* 1024, 512 * 1024, 8096, false);
             var connection = await SocketConnection.ConnectAsync(endPoint, sendPipeOptions, receivePipeOptions).ConfigureAwait(false);
             var db = new PipePgDB(connection);
-
+            // var db = new PipePgDB(new Pipe(receivePipeOptions));
+            // return db;
+            
             try
             {
                 await db.WriteStartupAsync(username, database ?? username).ConfigureAwait(false);
 
                 await db.Authenticate(username, password).ConfigureAwait(false);
 
-                var msg = await db.ReadSinglePacketAsync().ConfigureAwait(false);
+                var msg = await db.ReadMessageAsync().ConfigureAwait(false);
                 var code = (BackendMessageCode) ReadByte(msg);
                 while (code == BackendMessageCode.ParameterStatus)
                 {
-                    msg = await db.ReadSinglePacketAsync().ConfigureAwait(false);
+                    msg = await db.ReadMessageAsync().ConfigureAwait(false);
                     code = (BackendMessageCode) ReadByte(msg);
                 }
                 if (code == BackendMessageCode.BackendKeyData)
                 {
                     // skip
-                    msg = await db.ReadSinglePacketAsync().ConfigureAwait(false);
+                    msg = await db.ReadMessageAsync().ConfigureAwait(false);
                 }
                 ValidateResponseMessage(msg, BackendMessageCode.ReadyForQuery);
 
@@ -73,11 +83,13 @@ namespace Npg.Core.Raw
             }
         }
 
+        public byte[] ThousandRows { get; } = File.ReadAllBytes("1000rows");
+        
         public ValueTask ExecuteSimpleAsync(string sql)
         {
             static void Write(PipePgDB db, string sql)
             {
-                var bytes = db._writeBuffer.Buffer.Span.Slice(5);
+                var bytes = db._writeBuffer.Buffer.Span.Slice(CodeAndLengthBytes);
                 var length = UTF8Encoding.GetBytes(sql, bytes) + 1;
                 bytes[length - 1] = 0;
 
@@ -90,21 +102,23 @@ namespace Npg.Core.Raw
             return this.FlushAsync();
         }
 
-        public ValueTask ExecuteExtendedAsync(string sql)
+        private int _portalCount;
+
+        public async ValueTask ExecuteExtendedAsync(string sql)
         {
             static void Write(PipePgDB db, string sql)
             {
                 var bytes = db._writeBuffer.Buffer.Span;
 
-                var length = WriteParse(db, sql, bytes.Slice(5));
-                bytes = bytes.Slice(length + 5);
-                length = WriteBind(db, bytes.Slice(5));
-                bytes = bytes.Slice(length + 5);
-                length = WriteDescribe(db, bytes.Slice(5));
-                bytes = bytes.Slice(length + 5);
-                length = WriteExecute(db, bytes.Slice(5));
-                bytes = bytes.Slice(length + 5);
-                WriteSync(db, bytes.Slice(5));
+                var length = WriteParse(db, sql, bytes.Slice(CodeAndLengthBytes));
+                bytes = bytes.Slice(length + CodeAndLengthBytes);
+                length = WriteBind(db, bytes.Slice(CodeAndLengthBytes));
+                bytes = bytes.Slice(length + CodeAndLengthBytes);
+                length = WriteDescribe(db, bytes.Slice(CodeAndLengthBytes));
+                bytes = bytes.Slice(length + CodeAndLengthBytes);
+                length = WriteExecute(db, bytes.Slice(CodeAndLengthBytes));
+                bytes = bytes.Slice(length + CodeAndLengthBytes);
+                WriteSync(db, bytes.Slice(CodeAndLengthBytes));
             }
 
             static int WriteParse(PipePgDB db, string sql, Span<byte> bytes)
@@ -136,7 +150,6 @@ namespace Npg.Core.Raw
 
             static int WriteBind(PipePgDB db, Span<byte> bytes)
             {
-                var output = bytes;
                 var fullLength = 0;
 
                 // Portal
@@ -178,7 +191,6 @@ namespace Npg.Core.Raw
 
             static int WriteDescribe(PipePgDB db, Span<byte> bytes)
             {
-                var output = bytes;
                 var fullLength = 0;
 
                 // Portal
@@ -201,7 +213,6 @@ namespace Npg.Core.Raw
 
             static int WriteExecute(PipePgDB db, Span<byte> bytes)
             {
-                var output = bytes;
                 var fullLength = 0;
 
                 // Portal
@@ -227,14 +238,23 @@ namespace Npg.Core.Raw
                 return 0;
             }
 
+            // var x = Task.Run(async () =>
+            // {
+            //     while (true)
+            //     {
+            //         await _readPipe.Writer.WriteAsync(ThousandRows);
+            //     }
+            // });
+            // await x;
+            //
             Write(this, sql);
-            return this.FlushAsync();
+            await FlushAsync();
         }
 
         public static string ParseSimpleQueryDataRowColumn(ReadOnlySequence<byte> column)
             => UTF8Encoding.GetString(column);
 
-        private ValueTask FlushAsync() => this._writeBuffer.FlushAsync();
+        private ValueTask FlushAsync() => _writeBuffer.FlushAsync();
 
         private ValueTask WriteStartupAsync(string username, string database)
         {
@@ -294,20 +314,20 @@ namespace Npg.Core.Raw
 
         private void WriteMessage(ReadOnlySpan<byte> message)
         {
-            this._writeBuffer.WriteInt32(message.Length + 4);
-            this._writeBuffer.WriteBytes(message);
+            _writeBuffer.WriteInt32(message.Length + 4);
+            _writeBuffer.WriteBytes(message);
         }
 
         private void WriteMessageWithCode(ReadOnlySpan<byte> message, byte messageCode)
         {
-            this._writeBuffer.WriteByte(messageCode);
-            this._writeBuffer.WriteInt32(message.Length + 4);
-            this._writeBuffer.WriteBytes(message);
+            _writeBuffer.WriteByte(messageCode);
+            _writeBuffer.WriteInt32(message.Length + 4);
+            _writeBuffer.WriteBytes(message);
         }
 
         private async ValueTask Authenticate(string username, string? password)
         {
-            var authenticateRequestMessage = await this.ReadSinglePacketAsync().ConfigureAwait(false);
+            var authenticateRequestMessage = await ReadMessageAsync().ConfigureAwait(false);
             ValidateResponseMessage(authenticateRequestMessage, BackendMessageCode.AuthenticationRequest);
 
             var authenticationRequestType = (AuthenticationRequestType) ReadInt32BigEndian(authenticateRequestMessage.Slice(5));
@@ -332,14 +352,8 @@ namespace Npg.Core.Raw
             return value;
         }
 
-        private static byte ReadByte(ReadOnlySequence<byte> sequence)
-        {
-            var sq = new SequenceReader<byte>(sequence);
-            var read = sq.TryRead(out var value);
-            Debug.Assert(read);
-            return value;
-        }
-
+        private static byte ReadByte(ReadOnlySequence<byte> sequence) => sequence.FirstSpan[0];
+        
         private async ValueTask AuthenticateMD5(string username, string? password, ReadOnlySequence<byte> salt)
         {
             if (password is null)
@@ -377,69 +391,95 @@ namespace Npg.Core.Raw
             var resultString = sb.ToString();
             var result = new byte[UTF8Encoding.GetByteCount(resultString) + 1];
             UTF8Encoding.GetBytes(resultString, 0, resultString.Length, result, 0);
-            result[result.Length - 1] = 0;
+            result[^1] = 0;
 
             this.WriteMessageWithCode(result, FrontendMessageCode.Password);
             await this.FlushAsync().ConfigureAwait(false);
 
-            var resp = await this.ReadSinglePacketAsync().ConfigureAwait(false);
+            var resp = await ReadMessageAsync().ConfigureAwait(false);
             ValidateResponseMessage(resp, BackendMessageCode.AuthenticationRequest);
         }
 
-        public ValueTask<ReadOnlySequence<byte>> ReadSinglePacketAsync(CancellationToken cancellationToken = default)
+        // byte - code
+        // int4 - length
+        private const int CodeAndLengthBytes = 5;
+
+        static class SequenceReaderHelpers
         {
-            if (!this._readBuffer.TryEnsure(5, out var packet))
-                return this.ReadAtLeastAsync(5, cancellationToken);
-                
-            var length = PeekHeader(packet);
-            if (packet.Length >= length)
-            {
-                return new ValueTask<ReadOnlySequence<byte>>(ReadPacket(packet, length));
-            }
-            
-            return this.ReadAtLeastAsync(length, cancellationToken);
+            public delegate void SpanSetterDelegate(ref SequenceReader<byte> instance, ReadOnlySpan<byte> span);
+            public static readonly SpanSetterDelegate SpanSetter = Delegate.CreateDelegate(typeof(SpanSetterDelegate), null, typeof(SequenceReader<byte>).GetProperty(nameof(SequenceReader<byte>.CurrentSpan)).SetMethod) as SpanSetterDelegate;
         }
 
-        private async ValueTask<ReadOnlySequence<byte>> ReadAtLeastAsync(int minimumSize = 5, CancellationToken cancellationToken = default)
+        public class FrameHolder
         {
-            var packet = await this._readBuffer.EnsureAsync(minimumSize).ConfigureAwait(false);
+            private readonly ReadOnlySequence<byte> _buffer;
 
-            var length = PeekHeader(packet);
-            if (packet.Length >= length)
+            internal FrameHolder(ReadOnlySequence<byte> buffer)
             {
-                return ReadPacket(packet, length);
+                _buffer = buffer;
             }
-
-            return await ReadSinglePacketAsync(cancellationToken);
-        }
-
-        int PeekHeader(ReadOnlySequence<byte> packet)
-        {
-            var length = ReadInt32BigEndian(packet.Slice(1)) + 1;
-            Debug.Assert(length < 8192);
-            return length;
-
         }
         
-        private ReadOnlySequence<byte> ReadPacket(ReadOnlySequence<byte> packet, int length)
+        
+        private bool TryReadMessage(out MessageReader reader, out int ensureLength)
         {
-            Debug.Assert(packet.Length >= length);
-            var p = packet;
-            _readBuffer.Consume(length);
-            return p.Slice(0, length);
+            if (!_readBuffer.TryRead(CodeAndLengthBytes, out var buf))
+            {
+                reader = default;
+                ensureLength = CodeAndLengthBytes;
+                return false;
+            }
+
+            var messageReader = new MessageReader(buf);
+            if (!messageReader.TryParseMessageHeader(out _, out var messageLength))
+                Debug.Fail("Could not parse message header after asking for 'message header' bytes.");
+            if (buf.Length < messageLength)
+            {
+                reader = default;
+                ensureLength = messageLength;
+                return false;
+            }
+
+            reader = messageReader;
+            ensureLength = messageLength;
+            return true;
+        }
+        
+        public bool TryGetMessageReader(out MessageReader reader)
+        {
+            if (!TryReadMessage(out var buf, out _))
+            {
+                reader = default;
+                return false;
+            }
+            
+            reader = buf;
+            return true;
+        }
+        
+        public void Advance(long consumed) => _readBuffer.Advance(consumed);
+        
+        public ValueTask MoveNextAsync(CancellationToken cancellationToken = default)
+        {
+            if (!TryReadMessage(out var buffer, out var ensureLength))
+                return _readBuffer.EnsureAsync(ensureLength, cancellationToken);
+            
+            return ValueTask.CompletedTask;
         }
 
-        public static void ValidateResponseMessage(ReadOnlySequence<byte> response)
+        public ValueTask<ReadOnlySequence<byte>> ReadMessageAsync(CancellationToken cancellationToken = default)
         {
-            var responseType = (BackendMessageCode) ReadByte(response);
-            if (responseType == BackendMessageCode.ErrorResponse)
-            {
-                // byte - code
-                // int4 - length
-                response = response.Slice(5);
+            if (!TryReadMessage(out var buffer, out var ensureLength))
+                return ReadFrameAsyncCore(this, ensureLength, cancellationToken);
 
-                var message = ErrorOrNoticeMessage.Load(response);
-                throw new Exception();
+            _readBuffer.Advance(ensureLength);
+            return new ValueTask<ReadOnlySequence<byte>>(buffer.Sequence);
+            
+            static async ValueTask<ReadOnlySequence<byte>> ReadFrameAsyncCore(PipePgDB instance, int ensureLength,
+                CancellationToken cancellationToken = default)
+            {
+                await instance._readBuffer.EnsureAsync(ensureLength, cancellationToken);
+                return await instance.ReadMessageAsync(cancellationToken);
             }
         }
 
@@ -451,9 +491,7 @@ namespace Npg.Core.Raw
                 return;
             }
 
-            // byte - code
-            // int4 - length
-            response = response.Slice(5);
+            response = response.Slice(CodeAndLengthBytes);
 
             if (responseType == BackendMessageCode.ErrorResponse)
             {
@@ -610,7 +648,7 @@ namespace Npg.Core.Raw
                     }
                 }
 
-            End:
+                End:
                 if (severity == null)
                     throw new Exception("Severity not received in server error message");
                 if (code == null)

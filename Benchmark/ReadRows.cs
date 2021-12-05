@@ -1,134 +1,79 @@
 ﻿using BenchmarkDotNet.Attributes;
 using Npg.Core.Raw;
 using Npgsql;
-using System.Buffers;
 using System.Net;
 using System.Threading.Tasks;
+using BenchmarkDotNet.Engines;
 
 namespace Benchmark
 {
+    [SimpleJob(RunStrategy.Throughput, warmupCount: 1, targetCount: 20)]
     public class ReadRows
     {
         const string PostgresUserPassword = "postgres123";
         const string DefaultConnectionString = $"Server=127.0.0.1;User ID=postgres;Password={PostgresUserPassword};Database=postgres;SSL Mode=Disable;Pooling=false;Max Auto Prepare=0;";
 
-        [Params(1000)]
+        [Params(1, 100, 1000, 8000)]
         public int NumRows { get; set; }
 
         NpgsqlCommand Command { get; set; } = default!;
 
         string RawQuery = string.Empty;
-        PgDB RawDB;
-        PipePgDB PipeRawDB;
+        public PipePgDB PipeRawDB;
 
         [GlobalSetup(Target = nameof(ReadNpgsql))]
         public void SetupNpgsql()
         {
             var conn = new NpgsqlConnection(DefaultConnectionString);
             conn.Open();
-            this.Command = new NpgsqlCommand($"SELECT generate_series(1, {this.NumRows})", conn);
-            //this.Command.Prepare();
+            Command = new NpgsqlCommand($"SELECT generate_series(1, {NumRows})", conn);
+            //Command.Prepare();
         }
 
-        [GlobalSetup(Targets = new[] { nameof(ReadRawSimple), nameof(ReadRawExtended) })]
-        public async Task SetupRaw()
+        [GlobalSetup(Targets = new[] { nameof(ReadPipeRawExtended) })]
+        public void SetupPipeRaw()
         {
             var endpoint = IPEndPoint.Parse("127.0.0.1:5432");
-            this.RawDB = await PgDB.OpenAsync(endpoint, "postgres", PostgresUserPassword, "postgres");
-            this.RawQuery = $"SELECT generate_series(1, {this.NumRows})";
-        }
-
-        [GlobalSetup(Targets = new[] { nameof(ReadPipeRawSimple), nameof(ReadPipeRawExtended) })]
-        public async Task SetupPipeRaw()
-        {
-            var endpoint = IPEndPoint.Parse("127.0.0.1:5432");
-            this.PipeRawDB = await PipePgDB.OpenAsync(endpoint, "postgres", PostgresUserPassword, "postgres");
-            this.RawQuery = $"SELECT generate_series(1, {this.NumRows})";
+            PipeRawDB = PipePgDB.OpenAsync(endpoint, "postgres", PostgresUserPassword, "postgres").GetAwaiter().GetResult();
+            // PipeRawDB.ExecuteExtendedAsync(RawQuery).GetAwaiter().GetResult();
+            RawQuery = $"SELECT generate_series(1, {NumRows})";
         }
 
         [Benchmark]
         public async ValueTask ReadNpgsql()
         {
-            await using var reader = await this.Command.ExecuteReaderAsync();
+            await using var reader = await Command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
 
             }
         }
 
-        // [Benchmark]
-        public async ValueTask ReadRawSimple()
-        {
-            await this.RawDB.ExecuteSimpleAsync(this.RawQuery);
-
-            await this.RawDB.EnsureSinglePacketAsync();
-            var response = this.RawDB.ReadPacket();
-            var responseCode = (BackendMessageCode)response.Span[0];
-
-            while (responseCode != BackendMessageCode.ReadyForQuery)
-            {
-                await this.RawDB.EnsureSinglePacketAsync();
-                response = this.RawDB.ReadPacket();
-                responseCode = (BackendMessageCode)response.Span[0];
-            }
-        }
-
-        // [Benchmark]
-        public async ValueTask ReadRawExtended()
-        {
-            await this.RawDB.ExecuteExtendedAsync(this.RawQuery);
-
-            await this.RawDB.EnsureSinglePacketAsync();
-            var responseCode = this.ReadPacket();
-
-            while (responseCode != BackendMessageCode.ReadyForQuery)
-            {
-                await this.RawDB.EnsureSinglePacketAsync();
-                responseCode = this.ReadPacket();
-            }
-        }
-
-        public BackendMessageCode ReadPacket()
-        {
-            var response = this.RawDB.ReadPacketAsSpan();
-            return (BackendMessageCode)response[0];
-        }
-
-        // [Benchmark]
-        public async ValueTask ReadPipeRawSimple()
-        {
-            await this.PipeRawDB.ExecuteSimpleAsync(this.RawQuery);
-
-            var response = await this.PipeRawDB.ReadSinglePacketAsync();
-            var responseCode = ReadPacket(response);
-
-            while (responseCode != BackendMessageCode.ReadyForQuery)
-            {
-                response = await this.PipeRawDB.ReadSinglePacketAsync();
-                responseCode = ReadPacket(response);
-            }
-        }
-
         [Benchmark]
         public async ValueTask ReadPipeRawExtended()
         {
-            await this.PipeRawDB.ExecuteExtendedAsync(this.RawQuery);
-
-            var response = await this.PipeRawDB.ReadSinglePacketAsync();
-            var responseCode = ReadPacket(response);
-
-            while (responseCode != BackendMessageCode.ReadyForQuery)
+            await PipeRawDB.ExecuteExtendedAsync(RawQuery);
+            while (!TryReadUntilCode(BackendMessageCode.ReadyForQuery, out var messagesRead))
             {
-                response = await this.PipeRawDB.ReadSinglePacketAsync();
-                responseCode = ReadPacket(response);
+                await PipeRawDB.MoveNextAsync();
             }
-        }
+            
+            bool TryReadUntilCode(BackendMessageCode messageCode, out int messagesRead)
+            {
+                messagesRead = 0;
+                if (!PipeRawDB.TryGetMessageReader(out var reader))
+                    return false;
 
-        public static BackendMessageCode ReadPacket(ReadOnlySequence<byte> response)
-        {
-            var sq = new SequenceReader<byte>(response);
-            sq.TryRead(out var read);
-            return (BackendMessageCode)read;
+                BackendMessageCode? lastCode = null;
+                while (reader.MoveNext() && lastCode != messageCode)
+                {
+                    lastCode = reader.Current.Code;
+                    messagesRead++;
+                }
+
+                PipeRawDB.Advance(reader.Consumed);
+                return lastCode == messageCode;
+            }
         }
     }
 }

@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Npg.Core.Raw\Npg.Core.Raw.csproj" />
+    <None Include="1000rows" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

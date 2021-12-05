@@ -20,10 +20,10 @@ namespace Npg.Core.Raw.Tests
             using var db = await PipePgDB.OpenAsync(endpoint, UserName, Password, Database);
             await db.ExecuteSimpleAsync(string.Empty);
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.EmptyQueryResponse);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ReadyForQuery);
         }
 
@@ -34,19 +34,19 @@ namespace Npg.Core.Raw.Tests
             using var db = await PipePgDB.OpenAsync(endpoint, UserName, Password, Database);
             await db.ExecuteExtendedAsync(string.Empty);
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ParseComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.BindComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.NoData);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.EmptyQueryResponse);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ReadyForQuery);
         }
 
@@ -57,13 +57,13 @@ namespace Npg.Core.Raw.Tests
             using var db = await PipePgDB.OpenAsync(endpoint, UserName, Password, Database);
             await db.ExecuteSimpleAsync("SELECT 1 WHERE 1 = 0");
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.RowDescription);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.CommandComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ReadyForQuery);
         }
 
@@ -74,19 +74,19 @@ namespace Npg.Core.Raw.Tests
             using var db = await PipePgDB.OpenAsync(endpoint, UserName, Password, Database);
             await db.ExecuteExtendedAsync("SELECT 1 WHERE 1 = 0");
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ParseComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.BindComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.RowDescription);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.CommandComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ReadyForQuery);
         }
 
@@ -97,18 +97,18 @@ namespace Npg.Core.Raw.Tests
             using var db = await PipePgDB.OpenAsync(endpoint, UserName, Password, Database);
             await db.ExecuteSimpleAsync("SELECT 1");
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.RowDescription);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.DataRow);
 
             ReadPacket(response);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.CommandComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ReadyForQuery);
 
             static void ReadPacket(ReadOnlySequence<byte> packet)
@@ -133,24 +133,24 @@ namespace Npg.Core.Raw.Tests
             using var db = await PipePgDB.OpenAsync(endpoint, UserName, Password, Database);
             await db.ExecuteExtendedAsync("SELECT 1");
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ParseComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.BindComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.RowDescription);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.DataRow);
 
             ReadPacket(response);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.CommandComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ReadyForQuery);
 
             static void ReadPacket(ReadOnlySequence<byte> packet)
@@ -175,16 +175,16 @@ namespace Npg.Core.Raw.Tests
             using var db = await PipePgDB.OpenAsync(endpoint, UserName, Password, "Fortunes");
             await db.ExecuteExtendedAsync("SELECT * FROM \"fortune\"");
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ParseComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.BindComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.RowDescription);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.DataRow);
 
             ReadPacket(response);
@@ -219,23 +219,23 @@ namespace Npg.Core.Raw.Tests
 
             await db.ExecuteSimpleAsync($"SELECT * FROM generate_series(1, {rows})");
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.RowDescription);
 
             for (var i = 1; i <= rows; i++)
             {
                 var iStr = i.ToString();
 
-                response = await db.ReadSinglePacketAsync();
+                response = await db.ReadMessageAsync();
                 PipePgDB.ValidateResponseMessage(response, BackendMessageCode.DataRow);
 
                 ReadPacket(response, iStr);
             }
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.CommandComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ReadyForQuery);
 
             static void ReadPacket(ReadOnlySequence<byte> packet, string iStr)
@@ -263,27 +263,27 @@ namespace Npg.Core.Raw.Tests
 
             await db.ExecuteExtendedAsync($"SELECT * FROM generate_series(1, {rows})");
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ParseComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.BindComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.RowDescription);
 
             for (var i = 1; i <= rows; i++)
             {
-                response = await db.ReadSinglePacketAsync();
+                response = await db.ReadMessageAsync();
                 PipePgDB.ValidateResponseMessage(response, BackendMessageCode.DataRow);
 
                 ReadPacket(response, i);
             }
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.CommandComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ReadyForQuery);
 
             static void ReadPacket(ReadOnlySequence<byte> packet, int i)
@@ -311,39 +311,39 @@ namespace Npg.Core.Raw.Tests
 
             await db.ExecuteSimpleAsync($"SELECT * FROM generate_series(1, {rows});SELECT * FROM generate_series(1, {rows})");
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.RowDescription);
 
             for (var i = 1; i <= rows; i++)
             {
                 var iStr = i.ToString();
 
-                response = await db.ReadSinglePacketAsync();
+                response = await db.ReadMessageAsync();
                 PipePgDB.ValidateResponseMessage(response, BackendMessageCode.DataRow);
 
                 ReadPacket(response, iStr);
             }
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.CommandComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.RowDescription);
 
             for (var i = 1; i <= rows; i++)
             {
                 var iStr = i.ToString();
 
-                response = await db.ReadSinglePacketAsync();
+                response = await db.ReadMessageAsync();
                 PipePgDB.ValidateResponseMessage(response, BackendMessageCode.DataRow);
 
                 ReadPacket(response, iStr);
             }
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.CommandComplete);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ReadyForQuery);
 
             static void ReadPacket(ReadOnlySequence<byte> packet, string iStr)
@@ -369,10 +369,10 @@ namespace Npg.Core.Raw.Tests
 
             await db.ExecuteExtendedAsync($"SELECT 1; SELECT 2;");
 
-            var response = await db.ReadSinglePacketAsync();
+            var response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ErrorResponse);
 
-            response = await db.ReadSinglePacketAsync();
+            response = await db.ReadMessageAsync();
             PipePgDB.ValidateResponseMessage(response, BackendMessageCode.ReadyForQuery);
         }
 

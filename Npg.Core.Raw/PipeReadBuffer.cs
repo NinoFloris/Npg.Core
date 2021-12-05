@@ -1,37 +1,44 @@
-﻿using System;
-using System.Buffers;
+﻿using System.Buffers;
 using System.IO.Pipelines;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Npg.Core.Raw
 {
     public sealed class PipeReadBuffer
     {
-        private int _readPosition;
+        private long _readPosition;
         private ReadOnlySequence<byte> _buffer = ReadOnlySequence<byte>.Empty;
         private readonly PipeReader _input;
+        
+        public PipeReadBuffer(PipeReader input) => _input = input;
 
-        public PipeReadBuffer(PipeReader input)
+        public bool TryRead(int minimumSize, out ReadOnlySequence<byte> buffer)
         {
-            this._input = input;
-        }
-
-        public bool TryEnsure(int bytes, out ReadOnlySequence<byte> buffer)
-        {
-            if (_readPosition + bytes <= _buffer.Length)
+            if (_readPosition + minimumSize <= _buffer.Length)
             {
                 buffer = _buffer.Slice(_readPosition);
                 return true;
             }
-            
-            Reset();
+        
+            return TryReadImpl(minimumSize, out buffer);
+        }
+
+        private bool TryReadImpl(int minimumSize, out ReadOnlySequence<byte> buffer)
+        {
+            if (!_buffer.IsEmpty)
+            {
+                _input.AdvanceTo(_buffer.GetPosition(_readPosition), _buffer.End);
+                _readPosition = 0;
+                _buffer = ReadOnlySequence<byte>.Empty;
+            }
             
             if (_input.TryRead(out var result))
             {
                 var buf = result.Buffer;
-                if (buf.Length >= bytes)
+                if (buf.Length >= minimumSize)
                 {
-                    _buffer = buffer = buf;
+                    buffer =_buffer = buf;
                     return true;
                 }
 
@@ -41,32 +48,16 @@ namespace Npg.Core.Raw
             buffer = ReadOnlySequence<byte>.Empty;
             return false;
         }
-
-        public ValueTask<ReadOnlySequence<byte>> EnsureAsync(int bytes)
+        
+        public async ValueTask EnsureAsync(int bytes, CancellationToken cancellationToken = default)
         {
-            if (TryEnsure(bytes, out var buffer))
-                return new ValueTask<ReadOnlySequence<byte>>(buffer);
-
-            return EnsureAsyncCore(this, bytes);
-            
-            static async ValueTask<ReadOnlySequence<byte>> EnsureAsyncCore(PipeReadBuffer instance, int bytes)
+            if (!TryReadImpl(bytes, out _))
             {
-                var r = await instance._input.ReadAtLeastAsync(bytes);
-                return instance._buffer = r.Buffer;
+                var r = await _input.ReadAtLeastAsync(bytes, cancellationToken);
+                _buffer = r.Buffer;
             }
         }
 
-
-        private void Reset()
-        {
-            if (!_buffer.IsEmpty)
-            {
-                _input.AdvanceTo(_buffer.GetPosition(_readPosition), _buffer.End);
-                _readPosition = 0;
-                _buffer = ReadOnlySequence<byte>.Empty;
-            }
-        }
-
-        public void Consume(int bytes) => _readPosition += bytes;
+        public void Advance(long bytes) => _readPosition += bytes;
     }
 }
