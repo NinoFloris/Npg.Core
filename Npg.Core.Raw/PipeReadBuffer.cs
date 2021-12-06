@@ -1,5 +1,7 @@
-﻿using System.Buffers;
+﻿using System;
+using System.Buffers;
 using System.IO.Pipelines;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,36 +11,31 @@ namespace Npg.Core.Raw
     {
         private long _readPosition;
         private ReadOnlySequence<byte> _buffer = ReadOnlySequence<byte>.Empty;
+        private long _bufferLength;
         private readonly PipeReader _input;
         
         public PipeReadBuffer(PipeReader input) => _input = input;
-
-        public bool TryRead(int minimumSize, out ReadOnlySequence<byte> buffer)
-        {
-            if (_readPosition + minimumSize <= _buffer.Length)
-            {
-                buffer = _buffer.Slice(_readPosition);
-                return true;
-            }
         
-            return TryReadImpl(minimumSize, out buffer);
-        }
-
-        private bool TryReadImpl(int minimumSize, out ReadOnlySequence<byte> buffer)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool TryRead(int minimumSize, out ReadOnlySequence<byte> buffer)
         {
             if (!_buffer.IsEmpty)
             {
-                _input.AdvanceTo(_buffer.GetPosition(_readPosition), _buffer.End);
+                _input.AdvanceTo( _buffer.GetPosition(_readPosition),_buffer.GetPosition(Math.Max(_readPosition, _bufferLength - 1)));
                 _readPosition = 0;
                 _buffer = ReadOnlySequence<byte>.Empty;
+                _bufferLength = 0;
             }
             
             if (_input.TryRead(out var result))
             {
                 var buf = result.Buffer;
-                if (buf.Length >= minimumSize)
+                var bufferLength = buf.Length;
+
+                if (bufferLength >= minimumSize)
                 {
                     buffer =_buffer = buf;
+                    _bufferLength = bufferLength;
                     return true;
                 }
 
@@ -49,12 +46,33 @@ namespace Npg.Core.Raw
             return false;
         }
         
-        public async ValueTask EnsureAsync(int bytes, CancellationToken cancellationToken = default)
+        public ValueTask WaitForDataAsync(int minimumSize, CancellationToken cancellationToken = default)
         {
-            if (!TryReadImpl(bytes, out _))
+            if (_readPosition == 0 && _bufferLength >= minimumSize || TryRead(minimumSize, out _))
+                return ValueTask.CompletedTask;
+            
+            return WaitForDataAsyncCore(this, minimumSize, cancellationToken);
+            
+            static async ValueTask WaitForDataAsyncCore(PipeReadBuffer instance, int minimumSize, CancellationToken cancellationToken)
             {
-                var r = await _input.ReadAtLeastAsync(bytes, cancellationToken);
-                _buffer = r.Buffer;
+                while (true)
+                {
+                    var result = await instance._input.ReadAsync(cancellationToken).ConfigureAwait(false);
+                    if (result.IsCompleted || result.IsCanceled)
+                        throw result.IsCompleted ? new ObjectDisposedException("Pipe was completed while waiting for more data.") : new OperationCanceledException();
+                
+                    var buffer = result.Buffer;
+                    var bufferLength = buffer.Length;
+                    if (bufferLength >= minimumSize)
+                    {
+                        // Immediately advance so TryRead can reread.
+                        instance._input.AdvanceTo( buffer.Start,buffer.GetPosition(bufferLength - 1));
+                        break;
+                    }
+                
+                    // Keep buffering until we get more data
+                    instance._input.AdvanceTo(buffer.Start, buffer.End);
+                }
             }
         }
 

@@ -6,6 +6,8 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipelines;
 using System.Net;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -18,7 +20,7 @@ namespace Npg.Core.Raw
         private readonly Pipe _readPipe;
         private readonly SocketConnection _connection;
         private readonly PipeWriteBuffer _writeBuffer;
-        private readonly PipeReadBuffer _readBuffer;
+        public readonly PipeReadBuffer _readBuffer;
         
         public PipePgDB(SocketConnection connection)
         {
@@ -404,23 +406,6 @@ namespace Npg.Core.Raw
         // int4 - length
         private const int CodeAndLengthBytes = 5;
 
-        static class SequenceReaderHelpers
-        {
-            public delegate void SpanSetterDelegate(ref SequenceReader<byte> instance, ReadOnlySpan<byte> span);
-            public static readonly SpanSetterDelegate SpanSetter = Delegate.CreateDelegate(typeof(SpanSetterDelegate), null, typeof(SequenceReader<byte>).GetProperty(nameof(SequenceReader<byte>.CurrentSpan)).SetMethod) as SpanSetterDelegate;
-        }
-
-        public class FrameHolder
-        {
-            private readonly ReadOnlySequence<byte> _buffer;
-
-            internal FrameHolder(ReadOnlySequence<byte> buffer)
-            {
-                _buffer = buffer;
-            }
-        }
-        
-        
         private bool TryReadMessage(out MessageReader reader, out int ensureLength)
         {
             if (!_readBuffer.TryRead(CodeAndLengthBytes, out var buf))
@@ -430,39 +415,33 @@ namespace Npg.Core.Raw
                 return false;
             }
 
-            var messageReader = new MessageReader(buf);
-            if (!messageReader.TryParseMessageHeader(out _, out var messageLength))
+            reader = new MessageReader(buf);
+            if (!reader.TryParseMessageHeader(out _, out ensureLength))
                 Debug.Fail("Could not parse message header after asking for 'message header' bytes.");
-            if (buf.Length < messageLength)
-            {
-                reader = default;
-                ensureLength = messageLength;
-                return false;
-            }
+                
+            if (reader.Length >= ensureLength)
+                return true;
 
-            reader = messageReader;
-            ensureLength = messageLength;
-            return true;
+            reader = default;
+            return false;
         }
+        
         
         public bool TryGetMessageReader(out MessageReader reader)
         {
-            if (!TryReadMessage(out var buf, out _))
-            {
-                reader = default;
-                return false;
-            }
-            
-            reader = buf;
-            return true;
+            if (TryReadMessage(out reader, out _))
+                return true;
+
+            reader = default;
+            return false;
         }
         
         public void Advance(long consumed) => _readBuffer.Advance(consumed);
         
         public ValueTask MoveNextAsync(CancellationToken cancellationToken = default)
         {
-            if (!TryReadMessage(out var buffer, out var ensureLength))
-                return _readBuffer.EnsureAsync(ensureLength, cancellationToken);
+            if (!TryReadMessage(out _, out var ensureLength))
+                return _readBuffer.WaitForDataAsync(ensureLength, cancellationToken);
             
             return ValueTask.CompletedTask;
         }
@@ -470,15 +449,15 @@ namespace Npg.Core.Raw
         public ValueTask<ReadOnlySequence<byte>> ReadMessageAsync(CancellationToken cancellationToken = default)
         {
             if (!TryReadMessage(out var buffer, out var ensureLength))
-                return ReadFrameAsyncCore(this, ensureLength, cancellationToken);
+                return ReadMessageAsyncCore(this, ensureLength, cancellationToken);
 
             _readBuffer.Advance(ensureLength);
-            return new ValueTask<ReadOnlySequence<byte>>(buffer.Sequence);
+            return new ValueTask<ReadOnlySequence<byte>>(buffer.GetReader().Sequence);
             
-            static async ValueTask<ReadOnlySequence<byte>> ReadFrameAsyncCore(PipePgDB instance, int ensureLength,
+            static async ValueTask<ReadOnlySequence<byte>> ReadMessageAsyncCore(PipePgDB instance, int ensureLength,
                 CancellationToken cancellationToken = default)
             {
-                await instance._readBuffer.EnsureAsync(ensureLength, cancellationToken);
+                await instance._readBuffer.WaitForDataAsync(ensureLength, cancellationToken);
                 return await instance.ReadMessageAsync(cancellationToken);
             }
         }
@@ -507,8 +486,6 @@ namespace Npg.Core.Raw
             var read = bytes.TryReadTo(out ReadOnlySequence<byte> strBytes, 0);
             Debug.Assert(read);
             return RelaxedUTF8Encoding.GetString(strBytes);
-
-            throw new Exception();
         }
 
         enum AuthenticationRequestType
